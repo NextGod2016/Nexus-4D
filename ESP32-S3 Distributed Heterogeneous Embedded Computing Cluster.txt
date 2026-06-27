@@ -1,0 +1,287 @@
+ESP32-S3 Distributed Heterogeneous Embedded Computing Cluster
+System Architecture Design
+Document Type: System Architecture Specification (v1.0)
+Status: This document describes the system hardware/software architecture. SPI physical layer communication and the rendering board display pipeline have been verified. The logic board system and OTA mechanisms are under construction. AI‑related modules are reserved for future extension.
+
+1. Background and Objectives
+1.1 Problem Statement
+In embedded graphics systems, a single chip taking on computation, scheduling, rendering, and peripheral management simultaneously creates contention for CPU time, memory bandwidth, and bus resources. This limits overall performance, and changes to any module can affect system stability.
+
+1.2 Design Goals
+Separate the four roles onto independent chips and interconnect them via a high‑speed serial bus, forming a distributed embedded computing cluster. Each node runs autonomously without mutual interference. The whole system is modular, replaceable, and scalable on demand.
+
+2. System Architecture Overview
+2.1 Three‑Layer Physical Architecture
+The system adopts a three‑layer physical separation:
+
+Top Board (Command Layer)
+
+Runs AI inference / simulation core
+
+Issues abstract behavioural commands
+
+Communicates with a local server via Wi‑Fi
+
+Analogy: decision centre
+
+Logic Board (Hub Layer)
+
+Bus enumeration and device discovery
+
+Task routing and command distribution
+
+Unified peripheral management (SD card, buttons, audio, power)
+
+Device driver loading and binding
+
+Analogy: system bus / chipset
+
+Function Boards (Execution Layer)
+
+Receive concrete instructions
+
+Independently execute dedicated tasks (graphics rendering, audio processing, AI acceleration, etc.)
+
+Generate work logs
+
+Analogy: accelerators / peripheral controllers
+
+2.2 Function Board Expansion Mechanism
+The third layer is an open function‑board plane, allowing different execution boards to be attached according to product requirements:
+
+Rendering Board: graphics rendering and display output
+
+Audio Board: audio codec and DSP processing
+
+AI Accelerator Board: neural network inference acceleration
+
+Sensor Aggregation Board: multi‑channel sensor data acquisition and preprocessing
+
+Other custom‑function boards as needed
+
+The system supports multiple function boards of the same type running in standby (e.g., primary/backup rendering boards for hot‑swap), all scheduled by the logic board.
+
+2.3 Design Principles
+The top board is unaware of function boards; it communicates only with the logic board.
+
+Function boards are unaware of each other; they only respond to bus commands.
+
+The logic board is the sole hub, but it does not parse business content—it only routes and schedules.
+
+Any function board that provides a standard identity descriptor can be automatically discovered and bound.
+
+3. Inter‑Chip Communication Protocol Stack
+3.1 Physical Layer
+Item	Specification
+Interface	SPI Slave HD (half‑duplex), 1‑bit data line
+Clock frequency	20 MHz
+Effective bandwidth	~2.4 MB/s
+Topology	One master (logic board) with multiple slaves (function boards), individual CS pins for addressing
+Max DMA per transaction	4092 bytes
+DMA restriction	Can only write to internal SRAM; PSRAM direct access is not supported
+3.2 Protocol Frame Format
+text
+[HEADER 2B] [TARGET_ID 1B] [FRAME_TYPE 1B] [CMD 1B] [LEN 2B] [PAYLOAD N] [CHECKSUM 1B]
+Field Definitions:
+
+Field	Description
+HEADER	Frame start marker (0xAA55)
+TARGET_ID	Target board ID (0x00 = broadcast, 0x01–0xFE = specific board)
+FRAME_TYPE	0x01 = real‑time command / 0x02 = OTA data block / 0x03 = SD card storage / 0x04 = version query
+CMD	Command code (valid for real‑time commands)
+LEN	Payload length (big‑endian)
+PAYLOAD	Data payload
+CHECKSUM	XOR checksum
+3.3 Device Discovery Mechanism
+After power‑on, the logic board sends broadcast query commands sequentially over each CS pin.
+
+A function board (slave) replies with an identity descriptor (fixed 64‑byte format) containing:
+
+Device type (rendering, audio, AI accelerator, etc.)
+
+Hardware version
+
+Capability bitmap
+
+Unique ID (last 6 bytes of chip MAC address)
+
+Current firmware version
+
+The logic board parses the descriptor, registers the device in its routing table, and loads the corresponding driver.
+
+3.4 Asynchronous Communication Model
+Because SPI is synchronous, the slave must return data over MISO whenever the clock runs. To achieve application‑level asynchronous semantics, the system uses the following strategy:
+
+The logic board does not wait for replies after sending command frames.
+
+The logic board periodically inserts “dummy read transactions” (sending null commands) to fetch pending log data from the function boards.
+
+Function boards store outgoing data in their MISO transmit register, waiting for the next read cycle.
+
+4. Logic Board System Design
+4.1 Core Responsibilities
+Bus enumeration and device discovery
+
+Device routing table maintenance and dynamic driver binding
+
+Command routing and distribution
+
+Unified peripheral management (SD card file system, key scanning, I²S audio, power monitoring)
+
+Exception handling and degradation strategies (timeout retry, primary/backup switching)
+
+4.2 Excluded Responsibilities
+Does not emulate CPU/PPU (that is the top board’s role)
+
+Does not process graphics, audio, or inference algorithms (that is the function boards’ role)
+
+Does not block waiting for external acknowledgements
+
+4.3 Device Routing Table Structure
+The logic board maintains up to 4 device slots. Each slot records:
+
+Field	Description
+TARGET_ID	Device ID (1–4)
+Device type	Rendering, audio, AI accelerator, etc.
+CS pin	Corresponding GPIO number
+Status	Empty / Active / Offline / OTA in progress
+Unique ID	Chip unique identifier
+Current firmware version	For version validation
+Driver function pointer	Business dispatch entry
+Scheduling priority	Dynamically adjustable
+5. Storage System Design
+5.1 Local Firmware Repository (SD Card)
+The logic board mounts a high‑speed SD card (minimum 2 GB) as the system’s local firmware repository. The directory structure is as follows:
+
+text
+SD Card Root
+├── /system/                     # Logic board firmware
+│   ├── logic_firmware_vX.X.X.bin
+│   └── rollback_flag.txt
+├── /devices/                    # Function board firmware library
+│   ├── /renderer/               # Rendering board versions
+│   ├── /audio/                  # Audio board versions
+│   ├── /ai_accel/               # AI accelerator board versions
+│   └── /unknown/                # Temporary storage for unknown devices
+├── /top_level/                  # Top board strategy files (stored only)
+└── /ota_logs/                   # Upgrade operation logs
+5.2 Version Index Table
+The logic board maintains an in‑memory version index table that records all available firmware versions for each device type, along with their checksums. It supports:
+
+Querying the latest stable version by device type
+
+Exact version lookup by version number
+
+CRC32 integrity verification
+
+6. OTA Upgrade Mechanism
+6.1 Dual‑File Evolution System
+The system supports two types of upgrade files:
+
+File	Target	Content
+File A (Strategy File)	Top board	AI model weights + policy rules
+File B (Firmware Image)	Logic board / Function boards	Complete firmware binary
+6.2 Upgrade Workflow
+The top board receives a new firmware/strategy file from the server via Wi‑Fi.
+
+After verifying integrity, the top board sends the file to the logic board.
+
+The logic board writes the file to the appropriate SD card directory and updates the version index.
+
+At a suitable time (according to its running strategy), the top board issues an upgrade command to the logic board.
+
+The logic board reads the firmware from the SD card and blind‑forwards it (in blocks) via SPI to the target function board.
+
+The function board receives all blocks → writes to the OTA backup partition → soft‑resets and activates the new firmware.
+
+6.3 Offline Re‑flashing
+When a faulty function board is replaced, the new board is plugged into the bus and provides its identity descriptor:
+
+The logic board enumerates the new device and reads its firmware version.
+
+It automatically queries the SD card for the latest stable version for that device type.
+
+It automatically initiates the re‑flashing process, without requiring server or top‑board intervention.
+
+After successful programming, the new board registers and comes online.
+
+6.4 Rollback Mechanism
+All boards (including the logic board itself) use an A/B partition OTA strategy:
+
+New firmware is written to the backup partition.
+
+If the board does not resume normal heartbeat within 10 seconds after loading, the hardware watchdog triggers.
+
+The boot flag is automatically redirected to the primary partition, rolling the system back to a safe state.
+
+7. Permission Isolation
+The system enforces a strict hierarchical permission chain:
+
+MCP Server > Top Board > Logic Board > Function Board
+
+Operation	Permission Owner
+Upgrade top board	MCP server delivers directly; top board applies itself
+Order logic board upgrade	Top board issues command; logic board reads from SD and executes
+Offline re‑flash function board	Logic board executes automatically (based on local SD repository)
+Function board self‑upgrade	Function board receives OTA blocks and writes to its own backup partition
+Logic board modifying top board	Strictly forbidden (no physical write path)
+Although the SD card stores strategy files for the top board, the logic board firmware does not contain any instruction sequence that writes to the top board’s flash – thus preventing privilege escalation at the physical layer.
+
+8. Current Validation Status
+Verified and Functional
+SPI HD two‑board communication (stable at 20 MHz)
+
+Internal SRAM double‑buffering mechanism
+
+Rendering board standalone display pipeline (receive → scaling → TFT output)
+
+CS_KEEP_ACTIVE hardware flow control for frame boundary management
+
+Under Construction
+Logic board device discovery and routing table maintenance
+
+SD card FATFS file system driver and repository management
+
+FRAME_TYPE classification and handling framework
+
+Designed but Not Yet Implemented
+Logic board dynamic scheduling priority adjustment
+
+Top board Wi‑Fi MCP communication protocol
+
+Full OTA dual‑file distribution and atomic rollback chain
+
+9. Key Technical Constraints
+Constraint	Limitation	Mitigation
+DMA transfer limit	4092 bytes per transaction	Application‑level chunking (1 KB per block)
+DMA memory restriction	Only internal SRAM writable	Reassemble large data in SRAM in chunks
+SPI slave mode	Quad mode not supported	Use standard SPI HD (1‑bit)
+Bus load	≤ 4 slaves recommended at 20 MHz	4 CS pins, support up to 4 function boards
+40 MHz unavailable	Signal integrity issue with jumper wires	Lock at 20 MHz; re‑evaluate on PCB
+10. Reserved Architectural Headroom
+The system reserves extension interfaces in the following areas (currently not implemented):
+
+Distributed AI Log Loop
+
+Each function board may deploy lightweight inference models to generate structured work logs.
+
+The logic board aggregates and forwards them via the top board.
+
+This provides a data channel for future server‑side intelligent analysis.
+
+Local Server Interaction
+
+The top board already reserves a Wi‑Fi communication interface.
+
+Bidirectional MCP communication with a local server can be established later.
+
+Online Scheduling Policy Adjustment
+
+The logic board’s scheduling priorities accept dynamic configuration from the top board.
+
+This enables more complex adaptive scheduling algorithms in the future.
+
+Detailed implementation of the above modules will be defined in subsequent iterations based on requirements.
+
+This document is the system architecture specification for development and implementation reference.
+
