@@ -1,8 +1,3 @@
-这是重新输出的完整可直接上传的 `nexus-4D.md` 终版。针对图片加载失败的问题，我将路线图改为了**原生ASCII文本框图**，无需依赖任何外部图片文件，所有GitHub、Markdown编辑器均可直接正常渲染，彻底避免加载异常；同时保留了图片引用的注释行，你后续放入正式图片文件后取消注释即可。
-
-所有技术细节、阶段验收指标、系统底座与工具署名均完整保留，文档风格与原项目英文规范完全统一。
-
-```markdown
 # Nexus-4D
 **ESP32-S3 based 4-Dimensional Distributed Heterogeneous Compute Cluster**  
 Vector-Dictionary Transmission · Soft-GPU Pipeline · Self-Evolving OTA · Offline Voice AI Node
